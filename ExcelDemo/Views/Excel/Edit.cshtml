@@ -1,0 +1,331 @@
+﻿@{
+    Layout = null;
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>@ViewBag.FileName - Excel 编辑器</title>
+
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckyexcel/dist/luckyexcel.umd.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        #luckysheet-container {
+            margin: 0;
+            padding: 0;
+            position: absolute;
+            width: 100%;
+            bottom: 0;
+            top: 41px;
+        }
+
+        .toolbar {
+            height: 40px;
+            background: #f3f3f3;
+            display: flex;
+            align-items: center;
+            padding: 0 15px;
+            gap: 10px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        .btn {
+            padding: 5px 15px;
+            cursor: pointer;
+            background: #0078d4;
+            color: white;
+            border: none;
+            border-radius: 2px;
+        }
+
+        .btn-green {
+            background: #107c41;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="toolbar">
+        <input type="file" id="uploadFile" accept=".xlsx" style="display:none;" onchange="importExcel(event)" />
+        <button class="btn" onclick="document.getElementById('uploadFile').click()">导入本地 .xlsx</button>
+        <button class="btn btn-green" onclick="exportExcel()">导出至本地</button>
+
+        <button class="btn" style="background:#d83b01; margin-left: 20px;" onclick="window.location.href='/Excel/Edit/@ViewBag.DocumentId'">
+            🔄 放弃当前修改，从服务器重新拉取
+        </button>
+
+        <div style="flex-grow: 1;"></div>
+        <button class="btn" id="saveBtn" onclick="submitData()">💾 保存到服务器 (AJAX)</button>
+    </div>
+
+    <div id="luckysheet-container"></div>
+
+    <script>
+        let initialData = @Html.Raw(string.IsNullOrWhiteSpace(ViewBag.SheetData) ? "[]" : ViewBag.SheetData);
+
+        $(function () {
+            luckysheet.create({
+                container: 'luckysheet-container',
+                lang: 'zh',
+                allowImage: true,
+                data: initialData.length > 0 ? initialData : undefined
+            });
+        });
+
+        // ================== 修改核心：使用 Fetch 异步提交大体积 JSON ==================
+        function submitData() {
+            // 关键细节：如果正在编辑某个单元格，先让其失焦以保证数据写入配置里
+            if (document.querySelector('.luckysheet-rich-text-editor')) {
+                document.querySelector('.luckysheet-rich-text-editor').blur();
+            }
+
+            let allSheets = luckysheet.getAllSheets();
+            let jsonString = JSON.stringify(allSheets);
+
+            let btn = document.getElementById('saveBtn');
+            let originalText = btn.innerText;
+            btn.innerText = "⏳ 正在保存...";
+            btn.disabled = true;
+
+            fetch('/Excel/SaveData', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    Id: '@ViewBag.DocumentId',
+                    SheetDataJSON: jsonString
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.success) {
+                    alert("保存成功！");
+                    // 如需保存后刷新页面可解开下行注释
+                    // window.location.reload();
+                } else {
+                    alert("保存失败: " + data.message);
+                }
+            })
+            .catch(error => {
+                console.error("保存报错: ", error);
+                alert("网络或数据体积过大导致保存失败！请检查控制台。");
+            })
+            .finally(() => {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            });
+        }
+
+        // 3. 导入逻辑 (保持不变)
+        function importExcel(evt) {
+            const files = evt.target.files;
+            if (files == null || files.length == 0) return;
+            let file = files[0];
+
+            LuckyExcel.transformExcelToLucky(file, function(exportJson, luckysheetfile){
+                if(exportJson.sheets == null || exportJson.sheets.length == 0){
+                    alert("读取失败!");
+                    return;
+                }
+                luckysheet.destroy();
+                luckysheet.create({
+                    container: 'luckysheet-container',
+                    showinfobar: false,
+                    allowImage: true,
+                    data: exportJson.sheets,
+                    title: exportJson.info.name,
+                    userInfo: exportJson.info.name.creator
+                });
+            });
+        }
+
+        // 4. 导出逻辑核心 (保持不变)
+        function getARGB(color) {
+            if (!color) return 'FF000000';
+            if (color.indexOf('#') === 0) {
+                let hex = color.replace('#', '');
+                if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+                return 'FF' + hex.toUpperCase();
+            }
+            return 'FF000000';
+        }
+
+        function getExcelBorderType(type) {
+            const borderMap = {
+                1: 'thin', 2: 'hair', 3: 'dotted', 4: 'dashed', 5: 'dashDot',
+                6: 'dashDotDot', 8: 'medium', 9: 'thick', 10: 'mediumDashed', 13: 'medium'
+            };
+            return borderMap[type] || 'thin';
+        }
+
+        async function exportExcel() {
+            if (document.querySelector('.luckysheet-rich-text-editor')) {
+                document.querySelector('.luckysheet-rich-text-editor').blur();
+            }
+
+            const workbook = new ExcelJS.Workbook();
+            const sheets = luckysheet.getAllSheets();
+
+            const PADDING_OFFSET_PX = 8;
+            const LINE_HEIGHT_PT = 16.5;
+
+            sheets.forEach(sheet => {
+                if (sheet.status == 0 && sheets.length > 1) return;
+                const worksheet = workbook.addWorksheet(sheet.name);
+
+                worksheet.properties.defaultColWidth = (sheet.defaultColWidth || 73) / 7.5;
+
+                if (sheet.config) {
+                    if (sheet.config.columnlen) {
+                        for (let col in sheet.config.columnlen) {
+                            worksheet.getColumn(parseInt(col) + 1).width = sheet.config.columnlen[col] / 7.5;
+                        }
+                    }
+                    if (sheet.config.rowlen) {
+                        for (let row in sheet.config.rowlen) {
+                            let baseHeight = sheet.config.rowlen[row];
+                            worksheet.getRow(parseInt(row) + 1).height = (baseHeight * 0.75) + PADDING_OFFSET_PX;
+                        }
+                    }
+                    if (sheet.config.merge) {
+                        for (let key in sheet.config.merge) {
+                            let m = sheet.config.merge[key];
+                            worksheet.mergeCells(m.r + 1, m.c + 1, m.r + m.rs, m.c + m.cs);
+                        }
+                    }
+                }
+
+                if (sheet.data) {
+                    for (let r = 0; r < sheet.data.length; r++) {
+                        let row = sheet.data[r];
+                        if (!row) continue;
+
+                        let excelRow = worksheet.getRow(r + 1);
+
+                        for (let c = 0; c < row.length; c++) {
+                            let cell = row[c];
+                            if (!cell) continue;
+
+                            let cellValue = cell.m !== undefined ? cell.m : cell.v;
+                            if (cell.ct != null && cell.ct.t === 'inlineStr' && cell.ct.s != null) {
+                                cellValue = cell.ct.s.map(item => item.v).join("");
+                            }
+
+                            if (cellValue === null || cellValue === undefined || cellValue === "") continue;
+
+                            let targetCell = worksheet.getCell(r + 1, c + 1);
+                            targetCell.value = cellValue;
+
+                            let textStr = cellValue.toString();
+                            let lineCount = textStr.split('\n').length;
+                            if (lineCount > 1) {
+                                let requiredHeight = lineCount * LINE_HEIGHT_PT;
+                                if (!excelRow.height || excelRow.height < requiredHeight) {
+                                    excelRow.height = requiredHeight;
+                                }
+                            }
+
+                            targetCell.font = {
+                                name: cell.ff || '微软雅黑',
+                                size: cell.fs ? parseInt(cell.fs) : 11,
+                                bold: cell.bl === 1,
+                                italic: cell.it === 1,
+                                color: { argb: getARGB(cell.fc) }
+                            };
+
+                            let ht = cell.ht !== undefined ? cell.ht : 0;
+                            let vt = cell.vt !== undefined ? cell.vt : 0;
+
+                            let alignment = {
+                                horizontal: ht === 1 ? 'left' : ht === 2 ? 'right' : 'center',
+                                vertical: vt === 1 ? 'top' : vt === 2 ? 'bottom' : 'middle'
+                            };
+
+                            if (cell.tb === 2 || textStr.includes('\n')) {
+                                alignment.wrapText = true;
+                            }
+
+                            targetCell.alignment = alignment;
+
+                            if (cell.bg) {
+                                targetCell.fill = {
+                                    type: 'pattern',
+                                    pattern: 'solid',
+                                    fgColor: { argb: getARGB(cell.bg) }
+                                };
+                            }
+                        }
+                    }
+                }
+
+                if (sheet.config && sheet.config.borderInfo) {
+                    let borderInfo = sheet.config.borderInfo;
+                    borderInfo.forEach(border => {
+                        if (border.rangeType === 'range') {
+                            let range = border.range[0];
+                            let style = getExcelBorderType(border.style);
+                            let color = { argb: getARGB(border.color) };
+
+                            for (let r = range.row[0]; r <= range.row[1]; r++) {
+                                for (let c = range.column[0]; c <= range.column[1]; c++) {
+                                    let cell = worksheet.getCell(r + 1, c + 1);
+                                    if (border.borderType === 'border-all') {
+                                        cell.border = {
+                                            top: { style: style, color: color }, bottom: { style: style, color: color },
+                                            left: { style: style, color: color }, right: { style: style, color: color }
+                                        };
+                                    }
+                                }
+                            }
+                        } else if (border.rangeType === 'cell') {
+                            let cell = worksheet.getCell(border.value.row_index + 1, border.value.col_index + 1);
+                            let cellBorders = cell.border || {};
+                            let bData = border.value;
+
+                            if (bData.l) cellBorders.left = { style: getExcelBorderType(bData.l.style), color: { argb: getARGB(bData.l.color) } };
+                            if (bData.r) cellBorders.right = { style: getExcelBorderType(bData.r.style), color: { argb: getARGB(bData.r.color) } };
+                            if (bData.t) cellBorders.top = { style: getExcelBorderType(bData.t.style), color: { argb: getARGB(bData.t.color) } };
+                            if (bData.b) cellBorders.bottom = { style: getExcelBorderType(bData.b.style), color: { argb: getARGB(bData.b.color) } };
+                            cell.border = cellBorders;
+                        }
+                    });
+                }
+
+                if (sheet.images) {
+                    for (let imageId in sheet.images) {
+                        let imgObj = sheet.images[imageId];
+                        if (!imgObj.src) continue;
+
+                        let excelImageId = workbook.addImage({ base64: imgObj.src, extension: 'png' });
+                        let startCol = Math.floor(imgObj.default.left / 73);
+                        let startRow = Math.floor(imgObj.default.top / 20);
+
+                        worksheet.addImage(excelImageId, {
+                            tl: { col: startCol, row: startRow },
+                            ext: { width: imgObj.default.width, height: imgObj.default.height }
+                        });
+                    }
+                }
+            });
+
+            const buffer = await workbook.xlsx.writeBuffer();
+            saveAs(new Blob([buffer], { type: "application/octet-stream" }), "@(ViewBag.FileName).xlsx");
+        }
+    </script>
+</body>
+</html>
